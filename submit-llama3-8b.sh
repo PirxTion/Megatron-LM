@@ -1,7 +1,7 @@
 #!/bin/bash
 
-#SBATCH --account=a-a06
-#SBATCH --time=00:19:59
+#SBATCH --account=infra01
+#SBATCH --time=01:00:00
 #SBATCH --job-name=llama-8b
 #SBATCH --output=/iopsstor/scratch/cscs/%u/Megatron-LM/logs/slurm/training/%x-%j.out
 #SBATCH --error=/iopsstor/scratch/cscs/%u/Megatron-LM/logs/slurm/training/%x-%j.err
@@ -11,6 +11,7 @@
 #SBATCH --cpus-per-task=72
 #SBATCH --mem=460000
 #SBATCH --environment=/capstor/store/cscs/swissai/a06/containers/NGC-PyTorch/ngc_pt_jan.toml	# Vanilla 25.01 PyTorch NGC Image 
+#SBATCH --exclude=nid006689,nid006700,nid006712
 #SBATCH --signal=SIGUSR2@600	# Send SIGUSR2 600 seconds before hitting the time limit
 #SBATCH --no-requeue	# Prevent Slurm to requeue the job if the execution crashes (e.g. node failure) so we don't loose the logs
 
@@ -66,7 +67,7 @@ export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 # - MASTER_ADDR, MASTER_PORT, WORLD_SIZE - already known before `srun`
 # - RANK, LOCAL_RANK - will set at `srun` command
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
-export MASTER_PORT=6000
+export MASTER_PORT=12230
 export WORLD_SIZE=$SLURM_NPROCS
 
 ulimit -c 0
@@ -148,9 +149,8 @@ LEARNING_RATE_ARGS=(
 CHECKPOINTING_ARGS=(
 	--save $CKPT_DIR
 	--save-interval $CHECKPOINT_STEPS
-	--ckpt-format torch_dist
+	--ckpt-format torch
 	--load $CKPT_DIR
-	--async-save
 )
 
 MIXED_PRECISION_ARGS=(
