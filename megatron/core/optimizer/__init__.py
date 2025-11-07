@@ -496,6 +496,12 @@ def _get_megatron_optimizer_based_on_param_groups(
             setattr(optimizer, 'grad_stats_parallel_group', model_parallel_group)
     else:
         # FP32 optimizer.
+
+        # Cautious weight decay is only suported for mixed precision optimizers.
+        if config.cautious_weight_decay:
+            raise ValueError(
+                "Cautious weight decay is only supported for mixed precision optimizers."
+            )
         optimizer = FP32Optimizer(optimizer, config, init_state_fn)
         setattr(optimizer, 'grad_stats_parallel_group', model_parallel_group)
 
