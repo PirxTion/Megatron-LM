@@ -551,11 +551,47 @@ class MixedPrecisionOptimizer(MegatronOptimizer):
             return found_inf_flag
 
         return False
+    
+    def _apply_cautious_weight_decay(self):
+        """Apply cautious weight decay manually before optimizer step.
+        
+        CWD only applies weight decay when gradient and parameter have the same sign,
+        preventing the regularization from "fighting" against the gradient direction.
+        """
+        for group in self.optimizer.param_groups:
+            weight_decay = group.get('weight_decay', 0)
+            lr = group['lr']
+            
+            if weight_decay == 0:
+                continue
+                
+            for param in group['params']:
+                if param.grad is None:
+                    continue
+                
+                # CWD mask: allow decay only where grad and param have same sign
+                # mask = 1 if grad * param >= 0, else 0
+                mask = (param.grad * param >= 0).to(param.dtype)
+                
+                # Apply masked weight decay: w = w - lr * weight_decay * mask * w
+                param.data.add_(param.data * mask, alpha=-lr * weight_decay)
+            
+            # Zero out weight_decay so base optimizer doesn't re-apply it
+            group['weight_decay'] = 0
 
     @torch.no_grad()
     def step_with_ready_grads(self) -> bool:
         """Step the optimizer with ready gradients, return successful."""
         timers = self.config.timers
+
+        if self.config.use_cautious_weight_decay and not self.is_stub_optimizer:
+            if timers is not None:
+                timers('optimizer-cautious-weight-decay', log_level=1).start(
+                    barrier=self.config.barrier_with_L1_time
+                )
+            self._apply_cautious_weight_decay()
+            if timers is not None:
+                timers('optimizer-cautious-weight-decay').stop()
         # Step the optimizer.
         if timers is not None:
             timers('optimizer-inner-step', log_level=1).start(
