@@ -36,7 +36,8 @@ class AdEMAMix(torch.optim.Optimizer):
         beta3_warmup: Optional[int] = None,
         alpha_warmup: Optional[int] = None,
         eps: float = 1e-8,
-        weight_decay: float = 0
+        weight_decay: float = 0,
+        cautious_weight_decay: bool = False,
     ):
         if not 0.0 <= lr:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -62,6 +63,7 @@ class AdEMAMix(torch.optim.Optimizer):
             step=0
         )
         super().__init__(params, defaults)
+        self.cautious_weight_decay = cautious_weight_decay
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -132,7 +134,12 @@ class AdEMAMix(torch.optim.Optimizer):
                 ) / denom
 
                 # decay
-                update.add_(p, alpha=lmbda)
+                if self.cautious_weight_decay:
+                    # cautious weight decay: do weight decay only when the update and parameter have the same sign
+                    mask = torch.sign(p) == torch.sign(update)
+                    update.add_(p * mask, alpha=lmbda)
+                else:
+                    update.add_(p, alpha=lmbda)
 
                 p.add_(update, alpha=-lr)
 
