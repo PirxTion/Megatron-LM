@@ -462,7 +462,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         # runners in the cuda graph manager
         kwargs.pop("dynamic_inference_decode_only", None)
         hidden_states, context = self._forward_attention(*args, **kwargs)
-        output = self._forward_mlp(hidden_states, kwargs.get("inference_context", None))
+        output = self._forward_mlp(hidden_states, kwargs.get("inference_context", None), tok_ids=kwargs.get("tok_ids"))
         return output, context
 
     def _forward_attention(
@@ -576,7 +576,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
 
         return hidden_states, context
 
-    def _forward_mlp(self, hidden_states, inference_context=None):
+    def _forward_mlp(self, hidden_states, inference_context=None, tok_ids=None):
         """
         Perform a forward pass through the feed-forward layer.
 
@@ -618,11 +618,11 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
                     False,
                     tensor_parallel.random.get_cuda_rng_tracker,
                     self.pg_collection.tp,
-                    pre_mlp_layernorm_output,
+                    pre_mlp_layernorm_output, tok_ids=tok_ids
                 )
             else:
                 mlp_output_with_bias = tensor_parallel.checkpoint(
-                    self.mlp, False, pre_mlp_layernorm_output
+                    self.mlp, False, pre_mlp_layernorm_output, tok_ids=tok_ids
                 )
         elif should_chunk_mlp_for_prefill:
             # Chunk input along sequence dimension
@@ -630,7 +630,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             chunks = pre_mlp_layernorm_output.chunk(num_chunks, dim=0)
 
             # Compute outputs for each chunk
-            outputs = [self.mlp(chunk) for chunk in chunks]
+            outputs = [self.mlp(chunk, tok_ids=tok_ids) for chunk in chunks]
 
             # Aggregate chunk outputs
             mlp_output = torch.cat([out for out, _ in outputs], dim=0)
