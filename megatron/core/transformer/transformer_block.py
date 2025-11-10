@@ -390,6 +390,7 @@ class TransformerBlock(MegatronModule):
         self,
         hidden_states: Tensor,
         attention_mask: Tensor,
+        tok_ids: Tensor = None,
         context: Tensor,
         context_mask: Tensor,
         rotary_pos_emb: Tensor,
@@ -515,6 +516,7 @@ class TransformerBlock(MegatronModule):
         self,
         hidden_states: Union[Tensor, WrappedTensor],
         attention_mask: Optional[Tensor],
+        tok_ids: Optional[Tensor] = None,
         context: Optional[Tensor] = None,
         context_mask: Optional[Tensor] = None,
         rotary_pos_emb: Optional[Tensor] = None,
@@ -616,6 +618,7 @@ class TransformerBlock(MegatronModule):
                 hidden_states = self._checkpointed_forward(
                     hidden_states=hidden_states,
                     attention_mask=attention_mask,
+                    tok_ids=tok_ids, 
                     context=context,
                     context_mask=context_mask,
                     rotary_pos_emb=rotary_pos_emb,
@@ -644,6 +647,7 @@ class TransformerBlock(MegatronModule):
                         hidden_states, context = layer(
                             hidden_states=hidden_states,
                             attention_mask=attention_mask,
+                            tok_ids=tok_ids,
                             context=context,
                             context_mask=context_mask,
                             rotary_pos_emb=rotary_pos_emb,
