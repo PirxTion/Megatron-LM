@@ -152,6 +152,15 @@ class MLP(MegatronModule):
         self.ple.weight.data.pin_memory()
         self.ple.weight.model_parallel = False
 
+        # Initialize the embedding layer on the CPU
+        self.ple = nn.Embedding(
+            self.config.vocab_size,
+            self.config.hidden_size,
+            dtype=self.config.params_dtype,
+            device='cpu'
+        )
+        self.ple.weight.data.pin_memory()  # Pin memory for faster CPU-GPU transfers
+
     def forward(self, hidden_states, per_token_scale=None, tok_ids=None):
         """Perform the forward pass through the MLP block."""
         # [s, b, 4 * h/p]
@@ -227,18 +236,28 @@ class MLP(MegatronModule):
         if per_token_scale is not None:
             assert output_bias is None, "Bias is not supported with per_token_scale"
 
+        # Per Layer Embedding (PLE)
         if tok_ids is not None:
-            s, b = output.shape[:2]                      # [s, b, h]
-            flat_ids = tok_ids.view(-1)                  # [b*s]
+            s, b = hidden_states.shape[:2]  # [s, b, h]
+            flat_ids = tok_ids.view(-1)  # [b*s]
             uniq, inv = torch.unique(flat_ids, sorted=False, return_inverse=True)
-            cpu_rows = self.ple.weight[uniq.cpu()]       # [num_unique, h]
-            gpu_rows = cpu_rows.to(device=output.device, non_blocking=True)
-            scale = gpu_rows[inv].view(s, b, -1)         # [s, b, h]
-            output = output * scale
 
-        # Synchronize gradients for the embedding layer across all ranks
-        if output.requires_grad:
-            dist.all_reduce(output.grad, op=dist.ReduceOp.SUM)
+            # Fetch embedding rows from CPU to GPU
+            cpu_rows = self.ple.weight[uniq.cpu()]  # [num_unique, h]
+            gpu_rows = cpu_rows.to(device=hidden_states.device, non_blocking=True)
+            scale = gpu_rows[inv].view(s, b, -1)  # [s, b, h]
+
+            # Apply the scaling
+            output = hidden_states * scale
+
+            # Register a backward hook to synchronize gradients
+            def ple_backward_hook(grad):
+                # Ensure the gradient is on the same device as the output
+                grad = grad.to(hidden_states.device)
+                dist.all_reduce(grad, op=dist.ReduceOp.SUM)
+                return grad
+
+            output.register_hook(ple_backward_hook)
 
         return output, output_bias
 
