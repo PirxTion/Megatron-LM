@@ -10,8 +10,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import torch.distributed as dist
-
 from megatron.core.dist_checkpointing import ShardedTensor
 from megatron.core.dist_checkpointing.mapping import (
     ReplicaId,
@@ -142,24 +140,13 @@ class MLP(MegatronModule):
             tp_group=tp_group,
         )
 
-        # Per Layer Embedding
+        # Initialize the embedding layer on the GPU
         self.ple = nn.Embedding(
-            self.config.vocab_size,
-            self.config.hidden_size,
-            dtype=self.config.params_dtype,
-            device='cpu'
+            config.vocab_size,
+            config.hidden_size,
+            dtype=config.params_dtype,
+            device=torch.cuda.current_device()  # Move to GPU
         )
-        self.ple.weight.data.pin_memory()
-        self.ple.weight.model_parallel = False
-
-        # Initialize the embedding layer on the CPU
-        self.ple = nn.Embedding(
-            self.config.vocab_size,
-            self.config.hidden_size,
-            dtype=self.config.params_dtype,
-            device='cpu'
-        )
-        self.ple.weight.data.pin_memory()  # Pin memory for faster CPU-GPU transfers
 
     def forward(self, hidden_states, per_token_scale=None, tok_ids=None):
         """Perform the forward pass through the MLP block."""
@@ -242,22 +229,12 @@ class MLP(MegatronModule):
             flat_ids = tok_ids.view(-1)  # [b*s]
             uniq, inv = torch.unique(flat_ids, sorted=False, return_inverse=True)
 
-            # Fetch embedding rows from CPU to GPU
-            cpu_rows = self.ple.weight[uniq.cpu()]  # [num_unique, h]
-            gpu_rows = cpu_rows.to(device=hidden_states.device, non_blocking=True)
+            # Fetch embedding rows from the GPU
+            gpu_rows = self.ple.weight[uniq]  # [num_unique, h]
             scale = gpu_rows[inv].view(s, b, -1)  # [s, b, h]
 
             # Apply the scaling
             output = hidden_states * scale
-
-            # Register a backward hook to synchronize gradients
-            def ple_backward_hook(grad):
-                # Ensure the gradient is on the same device as the output
-                grad = grad.to(hidden_states.device)
-                dist.all_reduce(grad, op=dist.ReduceOp.SUM)
-                return grad
-
-            output.register_hook(ple_backward_hook)
 
         return output, output_bias
 
