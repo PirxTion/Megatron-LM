@@ -390,13 +390,13 @@ class TransformerBlock(MegatronModule):
         self,
         hidden_states: Tensor,
         attention_mask: Tensor,
-        tok_ids: Tensor = None,
         context: Tensor,
         context_mask: Tensor,
         rotary_pos_emb: Tensor,
         attention_bias: Tensor,
         packed_seq_params: PackedSeqParams,
         use_inner_quantization_context: bool,
+        tok_ids: Tensor = None,
     ):
         """Forward method with activation checkpointing."""
 
