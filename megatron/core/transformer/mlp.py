@@ -7,6 +7,7 @@ from typing import Optional, Union
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from megatron.core.dist_checkpointing import ShardedTensor
@@ -139,7 +140,17 @@ class MLP(MegatronModule):
             tp_group=tp_group,
         )
 
-    def forward(self, hidden_states, per_token_scale=None):
+        # Per Layer Embedding
+        self.ple = nn.Embedding(
+            self.config.vocab_size,
+            self.config.hidden_size,
+            dtype=self.config.params_dtype,
+            device='cpu'
+        )
+        self.ple.weight.data.pin_memory()
+        self.ple.weight.model_parallel = False
+
+    def forward(self, hidden_states, per_token_scale=None, tok_ids=None):
         """Perform the forward pass through the MLP block."""
         # [s, b, 4 * h/p]
         nvtx_range_push(suffix="linear_fc1")
@@ -213,6 +224,15 @@ class MLP(MegatronModule):
 
         if per_token_scale is not None:
             assert output_bias is None, "Bias is not supported with per_token_scale"
+
+        if tok_ids is not None:
+            s, b = output.shape[:2]                      # [s, b, h]
+            flat_ids = tok_ids.view(-1)                  # [b*s]
+            uniq, inv = torch.unique(flat_ids, sorted=False, return_inverse=True)
+            cpu_rows = self.ple.weight[uniq.cpu()]       # [num_unique, h]
+            gpu_rows = cpu_rows.to(device=output.device, non_blocking=True)
+            scale = gpu_rows[inv].view(s, b, -1)         # [s, b, h]
+            output = output * scale
 
         return output, output_bias
 
