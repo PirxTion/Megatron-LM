@@ -10,6 +10,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import torch.distributed as dist
+
 from megatron.core.dist_checkpointing import ShardedTensor
 from megatron.core.dist_checkpointing.mapping import (
     ReplicaId,
@@ -233,6 +235,10 @@ class MLP(MegatronModule):
             gpu_rows = cpu_rows.to(device=output.device, non_blocking=True)
             scale = gpu_rows[inv].view(s, b, -1)         # [s, b, h]
             output = output * scale
+
+        # Synchronize gradients for the embedding layer across all ranks
+        if output.requires_grad:
+            dist.all_reduce(output.grad, op=dist.ReduceOp.SUM)
 
         return output, output_bias
 
