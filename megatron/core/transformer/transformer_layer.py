@@ -469,6 +469,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         self,
         hidden_states: Tensor,
         attention_mask: Optional[Tensor] = None,
+        tok_ids: Optional[Tensor] = None,
         context: Optional[Tensor] = None,
         context_mask: Optional[Tensor] = None,
         rotary_pos_emb: Optional[Tensor] = None,
