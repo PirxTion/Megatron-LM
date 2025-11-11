@@ -51,6 +51,7 @@ class MLPSubmodules:
     linear_fc1: Union[ModuleSpec, type] = None
     activation_func: Union[ModuleSpec, type] = None
     linear_fc2: Union[ModuleSpec, type] = None
+    ple: Union[ModuleSpec, type] = None
 
 
 class MLP(MegatronModule):
