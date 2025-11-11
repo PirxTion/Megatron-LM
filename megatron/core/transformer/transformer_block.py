@@ -427,6 +427,7 @@ class TransformerBlock(MegatronModule):
                         hidden_states, context = layer(
                             hidden_states=hidden_states,
                             attention_mask=attention_mask,
+                            tok_ids=tok_ids,
                             context=context,
                             context_mask=context_mask,
                             rotary_pos_emb=rotary_pos_emb,
