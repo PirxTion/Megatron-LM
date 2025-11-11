@@ -39,9 +39,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-
 from megatron.core.transformer.module import MegatronModule
-from megatron.core.tensor_parallel.layers import VocabParallelEmbedding
 
 class PerLayerEmbedding(MegatronModule):
     """
@@ -50,6 +48,7 @@ class PerLayerEmbedding(MegatronModule):
     """
     def __init__(self, num_embeddings, embedding_dim, config):
         super().__init__(config=config)
+        from megatron.core.tensor_parallel.layers import VocabParallelEmbedding
         # VocabParallelEmbedding handles TP splitting and registration
         self.emb = VocabParallelEmbedding(
             num_embeddings,
