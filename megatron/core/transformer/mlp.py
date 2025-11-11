@@ -148,6 +148,8 @@ class MLP(MegatronModule):
             device=torch.cuda.current_device()  # Move to GPU
         )
 
+        self.register_parameter('ple_weight', self.ple.weight)
+
     def forward(self, hidden_states, per_token_scale=None, tok_ids=None):
 
         assert tok_ids is not None
