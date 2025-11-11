@@ -640,7 +640,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             mlp_output_with_bias = (mlp_output, bias_output)
 
         else:
-            mlp_output_with_bias = self.mlp(pre_mlp_layernorm_output)
+            mlp_output_with_bias = self.mlp(pre_mlp_layernorm_output, tok_ids=tok_ids)
 
         if self.recompute_pre_mlp_layernorm:
             # discard the output of the pre-mlp layernorm and register the recompute
