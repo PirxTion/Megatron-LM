@@ -140,12 +140,16 @@ class MLP(MegatronModule):
             tp_group=tp_group,
         )
 
-        # Initialize the embedding layer on the GPU
-        self.ple = nn.Embedding(
+        weight_ones = torch.ones(
             config.vocab_size,
             config.hidden_size,
             dtype=config.params_dtype,
-            device=torch.cuda.current_device()  # Move to GPU
+            device=torch.cuda.current_device()
+        )
+        
+        self.ple = nn.Embedding.from_pretrained(
+            weight_ones,
+            freeze=False          # True if you don’t want to train it
         )
 
     def forward(self, hidden_states, per_token_scale=None, tok_ids=None):
