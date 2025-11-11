@@ -40,6 +40,31 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+from megatron.core.transformer.module import MegatronModule
+from megatron.core.tensor_parallel.layers import VocabParallelEmbedding
+
+class PerLayerEmbedding(MegatronModule):
+    """
+    Tensor-parallel embedding table that outputs [B*S, H] and is trained
+    by Megatron's distributed optimizer.
+    """
+    def __init__(self, num_embeddings, embedding_dim, config):
+        super().__init__(config=config)
+        # VocabParallelEmbedding handles TP splitting and registration
+        self.emb = VocabParallelEmbedding(
+            num_embeddings,
+            embedding_dim,
+            config=config,
+            init_method=lambda x: x.fill_(1.0)   # start at 1.0
+        )
+
+    def forward(self, input_ids):          # input_ids: [B, S]  (or any 2-D)
+        # flatten to [B*S]  – VocabParallelEmbedding expects 1-D indices
+        flat = input_ids.view(-1)
+        out  = self.emb(flat)              # [B*S, H]
+        return out
+
+
 # pylint: disable=missing-class-docstring
 @dataclass
 class MLPSubmodules:
@@ -141,16 +166,10 @@ class MLP(MegatronModule):
             tp_group=tp_group,
         )
 
-        weight_ones = torch.ones(
-            config.vocab_size,
-            config.hidden_size,
-            dtype=config.params_dtype,
-            device=torch.cuda.current_device()
-        )
-        
-        self.ple = nn.Embedding.from_pretrained(
-            weight_ones,
-            freeze=False          # True if you don’t want to train it
+        self.ple = PerLayerEmbedding(
+            num_embeddings=config.vocab_size,
+            embedding_dim=config.hidden_size,
+            config=config
         )
 
     def forward(self, hidden_states, per_token_scale=None, tok_ids=None):
@@ -232,16 +251,9 @@ class MLP(MegatronModule):
             assert output_bias is None, "Bias is not supported with per_token_scale"
 
         if tok_ids is not None:
-            s, b, h = hidden_states.shape          # [s, b, h]
-            flat_ids = tok_ids.view(-1)            # [b*s]
-
-            # 1. forward through the embedding layer → autograd edge created
-            scale_flat = self.ple(flat_ids)        # [b*s, h]
-
-            # 2. reshape to original batch/sequence layout
-            scale = scale_flat.view(b, s, h).transpose(0, 1)  # [s, b, h]
-
-            # 3. apply the learned scaling (in-place to save memory)
+            s, b, h = hidden_states.shape
+            scale = self.ple(tok_ids)            # [B*S, H]
+            scale = scale.view(s, b, h)          # [S, B, H]
             output = output * scale
 
         return output, output_bias
@@ -263,14 +275,6 @@ class MLP(MegatronModule):
                         )
             sharded_state_dict.update(sub_sd)
         return sharded_state_dict
-
-    def parameters(self, recurse: bool = True):
-        # give Megatron all the normal parameters
-        for p in super().parameters(recurse):
-            yield p
-        # manually add the embedding weight that lives outside build_module
-        if hasattr(self, "ple") and self.ple.weight.requires_grad:
-            yield self.ple.weight
 
     def backward_dw(self):
         self.linear_fc2.backward_dw()
