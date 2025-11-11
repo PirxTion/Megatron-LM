@@ -263,6 +263,14 @@ class MLP(MegatronModule):
             sharded_state_dict.update(sub_sd)
         return sharded_state_dict
 
+    def parameters(self, recurse: bool = True):
+        # give Megatron all the normal parameters
+        for p in super().parameters(recurse):
+            yield p
+        # manually add the embedding weight that lives outside build_module
+        if hasattr(self, "ple") and self.ple.weight.requires_grad:
+            yield self.ple.weight
+
     def backward_dw(self):
         self.linear_fc2.backward_dw()
         self.linear_fc1.backward_dw()
