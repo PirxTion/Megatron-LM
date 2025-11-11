@@ -226,18 +226,19 @@ class MLP(MegatronModule):
         if per_token_scale is not None:
             assert output_bias is None, "Bias is not supported with per_token_scale"
 
-        # Per Layer Embedding (PLE)
+        # inside MLP.forward
         if tok_ids is not None:
-            s, b = hidden_states.shape[:2]  # [s, b, h]
-            flat_ids = tok_ids.view(-1)  # [b*s]
-            uniq, inv = torch.unique(flat_ids, sorted=False, return_inverse=True)
-
-            # Fetch embedding rows from the GPU
-            gpu_rows = self.ple.weight[uniq]  # [num_unique, h]
-            scale = gpu_rows[inv].view(s, b, -1)  # [s, b, h]
-
-            # Apply the scaling
-            output = hidden_states * scale
+            s, b = hidden_states.shape[:2]                 # [s, b, h]
+            flat_ids = tok_ids.view(-1)                    # [b*s]
+        
+            # 1. call the layer → autograd edge is created
+            scale_flat = self.ple(flat_ids)                # [b*s, h]
+        
+            # 2. reshape to [s, b, h] (or [b, s, h] – match your layout)
+            scale = scale_flat.view(b, s, h).transpose(0, 1)   # [s, b, h]
+        
+            # 3. apply
+            output = output * scale                        # keep the gradient path
 
         return output, output_bias
 
