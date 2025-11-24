@@ -2,7 +2,7 @@
 
 #SBATCH --account=infra01
 #SBATCH --time=5:00:00
-#SBATCH --job-name=apertus-300m_MLA
+#SBATCH --job-name=apertus-300m-MLA-no-qknorm
 #SBATCH --output=/iopsstor/scratch/cscs/%u/Megatron-LM/logs/slurm/training/%x-%j.out
 #SBATCH --error=/iopsstor/scratch/cscs/%u/Megatron-LM/logs/slurm/training/%x-%j.err
 #SBATCH --nodes=8
@@ -40,7 +40,7 @@ DATASET_CACHE_DIR=/iopsstor/scratch/cscs/$USER/datasets/cache
 
 # Logging directories & artifacts
 PROJECT_NAME=apertus_300m
-EXP_NAME=apertus-300m-MLA-${SLURM_NNODES}n-${SEQ_LEN}sl-${GBS}gbsz
+EXP_NAME=apertus-300m-MLA-no-qknorm-${SLURM_NNODES}n-${SEQ_LEN}sl-${GBS}gbsz
 PROJECT_DIR=$MEGATRON_LM_DIR/logs/Meg-Runs/$PROJECT_NAME
 
 #########################################
@@ -100,7 +100,6 @@ NETWORK_SIZE_ARGS=(
 	--make-vocab-size-divisible-by 128
 	--normalization RMSNorm
 	--swiglu
-	--qk-layernorm
 	--multi-latent-attention
 	--kv-lora-rank 512
 	--q-lora-rank 1536
