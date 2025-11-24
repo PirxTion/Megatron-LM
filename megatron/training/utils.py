@@ -42,7 +42,8 @@ from megatron.core.utils import (
     unwrap_model,
 )
 from megatron.legacy.model.module import param_is_not_shared
-
+from megatron.training import get_args
+from megatron.core import parallel_state
 
 def calc_params_l2_norm(model, force_create_fp32_copy=False):
     """Calculate l2 norm of parameters"""
@@ -727,3 +728,77 @@ def get_nvtx_range():
         def dummy_range(msg):
             yield
         return dummy_range
+
+
+
+def print_model_parameter_counts(model):
+    """
+    Counts and prints the total and activated parameters in the model,
+    handling Tensor, Pipeline, and Expert parallelism.
+    """
+    args = get_args()
+    if not isinstance(model, list):
+        model = [model]
+
+    dense_params = 0
+    moe_params = 0
+
+    for model_chunk in model:
+        for name, param in model_chunk.named_parameters():
+            if not param.requires_grad:
+                continue
+
+            # 1. Handle Tensor Parallelism Duplicates
+            # If a parameter is NOT tensor parallel (e.g. LayerNorm), it is replicated.
+            # We only count it on TP rank 0.
+            is_tp_parallel = getattr(param, 'tensor_model_parallel', False)
+            if not is_tp_parallel and parallel_state.get_tensor_model_parallel_rank() > 0:
+                continue
+
+            # 2. Handle Pipeline Parallelism Shared Embeddings
+            # If embeddings are tied, the last stage has a copy. Only count on the first stage.
+            if not args.untie_embeddings_and_output_weights:
+                if parallel_state.is_pipeline_last_stage():
+                    # Heuristic: Skip word embeddings on the last stage if tied
+                    if 'word_embeddings' in name or 'embedding' in name:
+                        if 'position' not in name: # Position embeddings are usually not shared this way
+                            continue
+
+            # 3. Classify Dense vs MoE
+            # MoE parameters in MCore typically have `allreduce=False`
+            is_moe = not getattr(param, 'allreduce', True) or 'expert' in name
+
+            if is_moe:
+                moe_params += param.numel()
+            else:
+                dense_params += param.numel()
+
+    # Sum across Model Parallel Group (TP + PP + EP)
+    counts = torch.tensor([dense_params, moe_params], dtype=torch.float32, device=torch.cuda.current_device())
+    torch.distributed.all_reduce(counts, group=parallel_state.get_model_parallel_group())
+    
+    total_dense = counts[0].item()
+    total_moe = counts[1].item()
+    total_params = total_dense + total_moe
+
+    # 4. Calculate Activated Parameters
+    # Dense params are always activated.
+    # MoE params are activated based on TopK.
+    activated_moe = 0
+    if args.num_experts is not None and args.num_experts > 0 and total_moe > 0:
+        # Assuming standard MoE where experts are identical size
+        # Activated MoE = (Total MoE / Num Experts) * TopK
+        topk = getattr(args, 'moe_router_topk', 1) # Default to 1 if not set
+        activated_moe = (total_moe / args.num_experts) * topk
+    
+    activated_params = total_dense + activated_moe
+
+    # Print on Rank 0
+    if torch.distributed.get_rank() == 0:
+        print(f"--------------------------------------------------")
+        print(f"Model Parameter Counts:")
+        print(f" > Total Parameters:     {total_params / 1e9:.3f} B")
+        print(f" > Activated Parameters: {activated_params / 1e9:.3f} B")
+        print(f"    - Dense:             {total_dense / 1e9:.3f} B")
+        print(f"    - MoE:               {total_moe / 1e9:.3f} B")
+        print(f"--------------------------------------------------")
