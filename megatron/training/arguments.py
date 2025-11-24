@@ -1198,12 +1198,15 @@ def core_transformer_config_from_args(args, config_class=None):
 
     # Config class.
     config_class = config_class or TransformerConfig
+    if args.gla_attention and args.multi_latent_attention:
+        raise ValueError("GLA and multi-latent attention cannot be enabled together.")
 
-    if args.multi_latent_attention:
+    if args.multi_latent_attention or args.gla_attention:
         config_class = MLATransformerConfig
 
     if args.heterogeneous_layers_config_path is not None:
         assert not args.multi_latent_attention, "Multi latent attention with heterogeneous layers is not supported."
+        assert not getattr(args, "gla_attention", False), "GLA with heterogeneous layers is not supported."
         config_class = HeterogeneousTransformerConfig
 
     # Translate args to core transformer configuration
@@ -1252,9 +1255,9 @@ def core_transformer_config_from_args(args, config_class=None):
         # Pop 'rope_type' to let the config class use the default value.
         kw_args.pop('rope_type', None)
     else:
-        assert (args.multi_latent_attention or args.rope_type == 'rope'), (
-            f'Common attention only support rope_type="rope", but got {args.rope_type}.'
-        )
+        assert (
+            args.multi_latent_attention or args.gla_attention or args.rope_type == 'rope'
+        ), f'Common attention only support rope_type="rope", but got {args.rope_type}.'
 
     if len(args.cp_comm_type) == 1:
         kw_args['cp_comm_type'] = args.cp_comm_type[0]
@@ -1601,6 +1604,8 @@ def _add_network_size_args(parser):
                        help='Untie embeddings and output weights.')
     group.add_argument('--multi-latent-attention', action='store_true',
                        help='Use multi-latent attention for model.')
+    group.add_argument('--gla-attention', action='store_true',
+                       help='Use Gated Latent Attention for the model.')
     group.add_argument('--mtp-num-layers', type=int, default=None,
                        help='Number of Multi-Token Prediction (MTP) Layers.'
                        'MTP extends the prediction scope to multiple future tokens at each position.'

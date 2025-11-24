@@ -183,6 +183,9 @@ class TransformerConfig(ModelParallelConfig):
     multi_latent_attention: bool = False
     """Whether to use multi-latent attention."""
 
+    gla_attention: bool = False
+    """Whether to use Gated Latent Attention (GLA)."""
+
     no_rope_freq: Optional[Union[int, List[int]]] = None
     """Controls which layers perform Rotary Position Embedding (RoPE). Accepts either:
     An integer N: Creates a pattern where RoPE is skipped every N-1 layers. For example,
@@ -692,6 +695,8 @@ class TransformerConfig(ModelParallelConfig):
         details.
         """
         super().__post_init__()
+        if self.gla_attention and self.multi_latent_attention:
+            raise ValueError("GLA and multi-latent attention cannot be enabled together.")
         if self.fp16 and self.bf16:
             raise ValueError(
                 f"Only one of self.fp16: {self.fp16} and self.bf16 {self.bf16} should be True."

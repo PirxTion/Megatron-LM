@@ -14,6 +14,7 @@ from megatron.core.transformer.multi_latent_attention import (
     MLASelfAttention,
     MLASelfAttentionSubmodules,
 )
+from megatron.core.transformer.gla_attention import GLASelfAttention, GLASelfAttentionSubmodules
 from megatron.core.transformer.multi_token_prediction import (
     MultiTokenPredictionBlockSubmodules,
     get_mtp_layer_offset,
@@ -74,6 +75,7 @@ def get_gpt_layer_with_transformer_engine_spec(
     moe_grouped_gemm: Optional[bool] = False,
     qk_layernorm: Optional[bool] = False,
     multi_latent_attention: Optional[bool] = False,
+    gla_attention: Optional[bool] = False,
     fp8: Optional[str] = None,  # pylint: disable=unused-argument
     moe_use_legacy_grouped_gemm: Optional[bool] = False,
     qk_l2_norm: Optional[bool] = False,
@@ -104,6 +106,9 @@ def get_gpt_layer_with_transformer_engine_spec(
             'The fp8 argument in "get_gpt_layer_with_transformer_engine_spec" has been deprecated'
             " and will be removed soon. Please update your code accordingly."
         )
+
+    if gla_attention and multi_latent_attention:
+        raise AssertionError("GLA and multi-latent attention cannot be enabled together.")
 
     if use_kitchen:
         assert HAVE_KITCHEN
@@ -161,6 +166,34 @@ def get_gpt_layer_with_transformer_engine_spec(
                 mlp_bda=get_bias_dropout_add,
             ),
         )
+    elif gla_attention:
+        assert not qk_l2_norm, "qk_l2_norm is not supported with GLA."
+        return ModuleSpec(
+            module=TransformerLayer,
+            submodules=TransformerLayerSubmodules(
+                input_layernorm=backend.layer_norm(),
+                self_attention=ModuleSpec(
+                    module=GLASelfAttention,
+                    params={"attn_mask_type": AttnMaskType.causal},
+                    submodules=GLASelfAttentionSubmodules(
+                        linear_q_proj=backend.column_parallel_linear(),
+                        linear_q_up_proj=backend.column_parallel_linear(),
+                        linear_kv_proj=backend.column_parallel_linear(),
+                        linear_kv_up_proj_1=backend.column_parallel_linear(),
+                        linear_kv_up_proj_2=backend.column_parallel_linear(),
+                        core_attention=backend.core_attention(),
+                        linear_proj=backend.row_parallel_linear(),
+                        q_layernorm=backend.layer_norm(),
+                        kv1_layernorm=backend.layer_norm(),
+                        kv2_layernorm=backend.layer_norm(),
+                    ),
+                ),
+                self_attn_bda=get_bias_dropout_add,
+                pre_mlp_layernorm=backend.layer_norm() if num_experts else IdentityOp,
+                mlp=mlp,
+                mlp_bda=get_bias_dropout_add,
+            ),
+        )
     else:
         qk_norm = backend.layer_norm(for_qk=True)
         return ModuleSpec(
@@ -202,6 +235,7 @@ def get_gpt_layer_local_spec(
     moe_grouped_gemm: Optional[bool] = False,
     qk_layernorm: Optional[bool] = False,
     multi_latent_attention: Optional[bool] = False,
+    gla_attention: Optional[bool] = False,
     fp8: Optional[str] = None,  # pylint: disable=unused-argument
     moe_use_legacy_grouped_gemm: Optional[bool] = False,
     normalization: Optional[str] = None,
@@ -243,6 +277,9 @@ def get_gpt_layer_local_spec(
             " and will be removed soon. Please update your code accordingly."
         )
 
+    if gla_attention and multi_latent_attention:
+        raise AssertionError("GLA and multi-latent attention cannot be enabled together.")
+
     mlp = get_mlp_module_spec_for_backend(
         backend=backend,
         num_experts=num_experts,
@@ -269,6 +306,34 @@ def get_gpt_layer_local_spec(
                         linear_proj=backend.row_parallel_linear(),
                         q_layernorm=qk_norm if qk_layernorm else IdentityOp,
                         kv_layernorm=qk_norm if qk_layernorm else IdentityOp,
+                    ),
+                ),
+                self_attn_bda=get_bias_dropout_add,
+                pre_mlp_layernorm=layer_norm,
+                mlp=mlp,
+                mlp_bda=get_bias_dropout_add,
+            ),
+        )
+    elif gla_attention:
+        assert not qk_l2_norm, "qk_l2_norm is not supported with GLA."
+        return ModuleSpec(
+            module=TransformerLayer,
+            submodules=TransformerLayerSubmodules(
+                input_layernorm=layer_norm,
+                self_attention=ModuleSpec(
+                    module=GLASelfAttention,
+                    params={"attn_mask_type": AttnMaskType.causal},
+                    submodules=GLASelfAttentionSubmodules(
+                        linear_q_proj=backend.column_parallel_linear(),
+                        linear_q_up_proj=backend.column_parallel_linear(),
+                        linear_kv_proj=backend.column_parallel_linear(),
+                        linear_kv_up_proj_1=backend.column_parallel_linear(),
+                        linear_kv_up_proj_2=backend.column_parallel_linear(),
+                        core_attention=backend.core_attention(),
+                        linear_proj=backend.row_parallel_linear(),
+                        q_layernorm=layer_norm,
+                        kv1_layernorm=layer_norm,
+                        kv2_layernorm=layer_norm,
                     ),
                 ),
                 self_attn_bda=get_bias_dropout_add,

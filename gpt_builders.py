@@ -112,6 +112,7 @@ def _get_transformer_layer_spec(use_te, config):
             args.moe_grouped_gemm,
             args.qk_layernorm,
             args.multi_latent_attention,
+            args.gla_attention,
             moe_use_legacy_grouped_gemm=args.moe_use_legacy_grouped_gemm,
             qk_l2_norm=args.qk_l2_norm,
             use_kitchen=config.use_kitchen,
@@ -122,7 +123,9 @@ def _get_transformer_layer_spec(use_te, config):
             args.moe_grouped_gemm,
             args.qk_layernorm,
             args.multi_latent_attention,
+            args.gla_attention,
             moe_use_legacy_grouped_gemm=args.moe_use_legacy_grouped_gemm,
             normalization=args.normalization,
+            qk_l2_norm=args.qk_l2_norm,
             use_kitchen=config.use_kitchen,
         )
