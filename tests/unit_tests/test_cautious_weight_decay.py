@@ -45,13 +45,13 @@ def test_ademamix_cautious_weight_decay_skips_when_update_increases_magnitude():
     assert cautious_value > baseline_value
 
 
-def test_cautious_weight_decay_restricted_to_ademamix():
-    """Using cautious weight decay with non-AdEMAMix optimizers should raise immediately."""
+def test_cautious_weight_decay_restricted_to_supported_optimizers():
+    """Using cautious weight decay with unsupported optimizers should raise immediately."""
     config = OptimizerConfig(
-        optimizer='adam',
+        optimizer='sgd',
         lr=0.01,
         weight_decay=0.1,
         use_cautious_weight_decay=True,
     )
-    with pytest.raises(ValueError, match="only supported for AdEMAMix"):
+    with pytest.raises(ValueError, match="only supported for Adam and AdEMAMix"):
         _get_megatron_optimizer_based_on_param_groups(config, model_chunks=[], param_groups=[])

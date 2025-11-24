@@ -38,7 +38,7 @@ class OptimizerConfig:
     """Weight decay coefficient for L2 regularization."""
 
     use_cautious_weight_decay: bool = False
-    """If true, apply Cautious Weight Decay (CWD) instead of standard weight decay."""
+    """If true, apply Cautious Weight Decay (CWD) instead of standard weight decay (Adam and AdEMAMix)."""
 
     ##############
     # Precision

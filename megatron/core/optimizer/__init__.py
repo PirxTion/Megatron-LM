@@ -46,6 +46,62 @@ from .optimizer_config import OptimizerConfig
 logger = logging.getLogger(__name__)
 
 
+class _CautiousWeightDecayAdamMixin:
+    """Mixin that applies weight decay only when update direction shrinks the parameter."""
+
+    def __init__(self, *args, cautious_weight_decay: bool = False, **kwargs):
+        cautious = kwargs.pop("cautious_weight_decay", False)
+        self.cautious_weight_decay = cautious
+        super().__init__(*args, **kwargs)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if not self.cautious_weight_decay:
+            return super().step(closure)
+
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        tracked_params = []
+        original_weight_decays = []
+        for group in self.param_groups:
+            weight_decay = group.get("weight_decay", 0.0)
+            original_weight_decays.append((group, weight_decay))
+
+            if weight_decay != 0:
+                lr = group["lr"]
+                for p in group["params"]:
+                    if p.grad is None:
+                        continue
+                    tracked_params.append((p, p.detach().clone(), lr, weight_decay))
+
+            # Disable built-in weight decay so we can apply it cautiously below.
+            group["weight_decay"] = 0.0
+
+        super().step(None)
+
+        for p, prev_data, lr, weight_decay in tracked_params:
+            update = (prev_data - p.data) / lr
+            mask = torch.sign(prev_data) == torch.sign(update)
+            p.data.add_(prev_data * mask, alpha=-lr * weight_decay)
+
+        # Restore original weight decay values for schedulers/checkpointing.
+        for group, weight_decay in original_weight_decays:
+            group["weight_decay"] = weight_decay
+
+        return loss
+
+
+class AdamWithCautiousWeightDecay(_CautiousWeightDecayAdamMixin, Adam):
+    """Adam variant that supports cautious weight decay."""
+
+
+class CPUAdamWithCautiousWeightDecay(_CautiousWeightDecayAdamMixin, CPUAdam):
+    """CPU Adam variant that supports cautious weight decay."""
+
+
 def _get_param_groups(
     model_chunks: List[MegatronModule],
     no_weight_decay_cond: Optional[Callable],
@@ -311,9 +367,9 @@ def _get_megatron_optimizer_based_on_param_groups(
     # when freezing sub-models we may have no trainable parameters on a rank and
     # hence an empty param_groups. However, we still need to create an optimizer
     # for the purposes of grad stats reductions
-    if config.use_cautious_weight_decay and config.optimizer != "ademamix":
+    if config.use_cautious_weight_decay and config.optimizer not in ("adam", "ademamix"):
         raise ValueError(
-            "Cautious weight decay is only supported for AdEMAMix optimizer."
+            "Cautious weight decay is only supported for Adam and AdEMAMix optimizers."
         )
     if param_groups:
         if config.optimizer_cpu_offload:
@@ -327,8 +383,14 @@ def _get_megatron_optimizer_based_on_param_groups(
             if config.use_torch_optimizer_for_cpu_offload:
                 gpu_optimizer_cls = cpu_optimizer_cls
             if config.optimizer == 'adam':
-                gpu_optimizer_cls = Adam
-                cpu_optimizer_cls = CPUAdam
+                gpu_optimizer_cls = (
+                    AdamWithCautiousWeightDecay if config.use_cautious_weight_decay else Adam
+                )
+                cpu_optimizer_cls = (
+                    CPUAdamWithCautiousWeightDecay
+                    if config.use_cautious_weight_decay
+                    else CPUAdam
+                )
                 optimizer_defaults = dict(
                     lr=config.lr,
                     weight_decay=config.weight_decay,
@@ -337,6 +399,8 @@ def _get_megatron_optimizer_based_on_param_groups(
                     bias_correction=True,
                     fused=True,  # this flag is used to improve the performance of the cpu optimizer
                 )
+                if config.use_cautious_weight_decay:
+                    optimizer_defaults["cautious_weight_decay"] = True
             else:
                 gpu_optimizer_cls = SGD
                 cpu_optimizer_cls = CPUSGD
@@ -388,7 +452,11 @@ def _get_megatron_optimizer_based_on_param_groups(
                 if is_te_min_version("2.1.0.dev0"):
                     kwargs.update({"store_param_remainders": config.store_param_remainders})
 
-            optimizer = Adam(**kwargs)
+            adam_cls = AdamWithCautiousWeightDecay if config.use_cautious_weight_decay else Adam
+            if config.use_cautious_weight_decay:
+                kwargs["cautious_weight_decay"] = True
+
+            optimizer = adam_cls(**kwargs)
 
             def init_state_fn(opt, config=None):
                 for group in opt.param_groups:
