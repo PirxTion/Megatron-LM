@@ -1,13 +1,13 @@
 #!/bin/bash
 
 #SBATCH --account=infra01
+#SBATCH --time=5:00:00
 #SBATCH --job-name=apertus-300m-Adam-CWD
-#SBATCH --partition=debug
 #SBATCH --output=/iopsstor/scratch/cscs/%u/Megatron-LM/logs/slurm/training/%x-%j.out
 #SBATCH --error=/iopsstor/scratch/cscs/%u/Megatron-LM/logs/slurm/training/%x-%j.err
-#SBATCH --nodes=2
+#SBATCH --nodes=8
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=2
+#SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=288
 #SBATCH --mem=460000
 #SBATCH --environment=/capstor/store/cscs/swissai/a06/containers/NGC-PyTorch/ngc_pt_jan.toml	# Vanilla 25.01 PyTorch NGC Image 
@@ -15,7 +15,6 @@
 
 echo "START TIME: $(date)"
 
-source ~/.venvs/megatron-dev/bin/activate
 ################ Configs ################
 # Use the FineWeb Edu dataset
 DATASETS="/capstor/store/cscs/swissai/a06/datasets_tokenized/megatron/sai/swissai-fineweb-filterrobots-merge/"
@@ -202,7 +201,7 @@ TORCHRUN_ARGS=(
 
 CMD_PREFIX="numactl --membind=0-3"
 
-TRAINING_CMD="$(which debugpy-run) -m torch.distributed.run -p 0.0.0.0:5678 -- ${TORCHRUN_ARGS[@]} $MEGATRON_LM_DIR/pretrain_gpt.py \
+TRAINING_CMD="torchrun ${TORCHRUN_ARGS[@]} $MEGATRON_LM_DIR/pretrain_gpt.py \
     ${TRANSFORMER_ENGINE_ARGS[@]} \
     ${NETWORK_SIZE_ARGS[@]} \
     ${LOGGING_ARGS[@]} \
