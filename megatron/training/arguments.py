@@ -791,6 +791,12 @@ def validate_args(args, defaults={}):
         assert args.hidden_size % args.num_attention_heads == 0
         args.kv_channels = args.hidden_size // args.num_attention_heads
 
+    if hasattr(args, "num_latent_heads"):
+        if args.num_latent_heads < 1:
+            raise ValueError("num_latent_heads must be at least 1.")
+        if args.num_latent_heads > 1 and not getattr(args, "gla_attention", False):
+            raise ValueError("num_latent_heads > 1 requires --gla-attention.")
+
     if args.seq_length is not None and args.context_parallel_size > 1:
         assert args.seq_length % (args.context_parallel_size * 2) == 0, \
             'seq-length should be a multiple of 2 * context-parallel-size ' \
@@ -1605,7 +1611,7 @@ def _add_network_size_args(parser):
     group.add_argument('--multi-latent-attention', action='store_true',
                        help='Use multi-latent attention for model.')
     group.add_argument('--gla-attention', action='store_true',
-                       help='Use Gated Latent Attention for the model.')
+                       help='Use Grouped Latent Attention for the model.')
     group.add_argument('--mtp-num-layers', type=int, default=None,
                        help='Number of Multi-Token Prediction (MTP) Layers.'
                        'MTP extends the prediction scope to multiple future tokens at each position.'
@@ -3087,6 +3093,8 @@ def _add_mla_args(parser):
                        help="Dimension of the position embedding in the QK projection.")
     group.add_argument('--v-head-dim', type=int, default=128,
                        help="Dimension of the head in the V projection.")
+    group.add_argument('--num-latent-heads', type=int, default=1,
+                       help="Number of latent heads in grouped latent attention. Must be >1 only when --gla-attention is set.")
     group.add_argument('--rotary-scaling-factor', type=float, default=1.0,
                        help="Rotary scaling factor for the rotary embeddings.")
     group.add_argument('--mscale', type=float, default=1.0,

@@ -1517,6 +1517,9 @@ class MLATransformerConfig(TransformerConfig):
     mscale_all_dim: float = 0.0
     """Mscale all dimensions for YaRN RoPE in Multi-Latent Attention, used by yarn."""
 
+    num_latent_heads: int = 1
+    """Number of latent heads in Grouped Latent Attention."""
+
     cache_mla_latents: bool = False
     """Cache the low dimensional tensors for MLA rather than full KV cache.
        This is only for the dynamic inference backend and requires that 
@@ -1524,6 +1527,10 @@ class MLATransformerConfig(TransformerConfig):
 
     def __post_init__(self):
         super().__post_init__()
+        if self.num_latent_heads < 1:
+            raise ValueError("num_latent_heads must be at least 1.")
+        if self.num_latent_heads > 1 and not self.gla_attention:
+            raise ValueError("num_latent_heads > 1 requires gla_attention=True.")
         if self.multi_latent_attention and self.apply_rope_fusion and self.rope_type != "yarn":
             raise ValueError("apply_rope_fusion for MLA only works with YARN RoPE.")
 

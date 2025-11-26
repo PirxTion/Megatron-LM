@@ -33,6 +33,7 @@ from megatron.core.transformer.transformer_layer import (
     TransformerLayerSubmodules,
     get_transformer_layer_offset,
 )
+import torch.nn as nn
 
 try:
     import transformer_engine as te  # pylint: disable=unused-import
@@ -177,15 +178,15 @@ def get_gpt_layer_with_transformer_engine_spec(
                     params={"attn_mask_type": AttnMaskType.causal},
                     submodules=GLASelfAttentionSubmodules(
                         linear_q_proj=backend.column_parallel_linear(),
+                        linear_q_down_proj=backend.column_parallel_linear(),
                         linear_q_up_proj=backend.column_parallel_linear(),
-                        linear_kv_proj=backend.column_parallel_linear(),
-                        linear_kv_up_proj_1=backend.column_parallel_linear(),
-                        linear_kv_up_proj_2=backend.column_parallel_linear(),
+                        linear_kv_down_proj=backend.column_parallel_linear(),
+                        linear_k_rope_proj=backend.column_parallel_linear(),
+                        linear_kv_up_proj=backend.linear(),
                         core_attention=backend.core_attention(),
                         linear_proj=backend.row_parallel_linear(),
                         q_layernorm=backend.layer_norm(),
-                        kv1_layernorm=backend.layer_norm(),
-                        kv2_layernorm=backend.layer_norm(),
+                        kv_layernorm=backend.layer_norm(),
                     ),
                 ),
                 self_attn_bda=get_bias_dropout_add,
@@ -325,15 +326,15 @@ def get_gpt_layer_local_spec(
                     params={"attn_mask_type": AttnMaskType.causal},
                     submodules=GLASelfAttentionSubmodules(
                         linear_q_proj=backend.column_parallel_linear(),
+                        linear_q_down_proj=backend.column_parallel_linear(),
                         linear_q_up_proj=backend.column_parallel_linear(),
-                        linear_kv_proj=backend.column_parallel_linear(),
-                        linear_kv_up_proj_1=backend.column_parallel_linear(),
-                        linear_kv_up_proj_2=backend.column_parallel_linear(),
+                        linear_kv_down_proj=backend.column_parallel_linear(),
+                        linear_k_rope_proj=backend.column_parallel_linear(),
+                        linear_kv_up_proj=ModuleSpec(module=nn.Linear),
                         core_attention=backend.core_attention(),
                         linear_proj=backend.row_parallel_linear(),
                         q_layernorm=layer_norm,
-                        kv1_layernorm=layer_norm,
-                        kv2_layernorm=layer_norm,
+                        kv_layernorm=layer_norm,
                     ),
                 ),
                 self_attn_bda=get_bias_dropout_add,
