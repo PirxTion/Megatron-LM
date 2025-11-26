@@ -148,7 +148,7 @@ class GPTModel(LanguageModule):
                 tp_group=self.pg_collection.tp,
             )
 
-        if self.position_embedding_type == 'rope' and not self.config.multi_latent_attention:
+        if self.position_embedding_type == 'rope' and not (self.config.multi_latent_attention or self.config.gla_attention):
             self.rotary_pos_emb = RotaryEmbedding(
                 kv_channels=self.config.kv_channels,
                 rotary_percent=rotary_percent,
@@ -161,7 +161,7 @@ class GPTModel(LanguageModule):
                 cp_group=self.pg_collection.cp,
             )
 
-        elif self.position_embedding_type == 'mrope' and not self.config.multi_latent_attention:
+        elif self.position_embedding_type == 'mrope' and not (self.config.multi_latent_attention or self.config.gla_attention):
             self.rotary_pos_emb = MultimodalRotaryEmbedding(
                 kv_channels=self.config.kv_channels,
                 rotary_percent=rotary_percent,
@@ -286,7 +286,7 @@ class GPTModel(LanguageModule):
         rotary_pos_emb = None
         rotary_pos_cos = None
         rotary_pos_sin = None
-        if self.position_embedding_type == 'rope' and not self.config.multi_latent_attention:
+        if self.position_embedding_type == 'rope' and not (self.config.multi_latent_attention or self.config.gla_attention):
             if in_inference_mode and self.config.flash_decode:
                 assert (
                     inference_context.is_static_batching()
@@ -305,7 +305,7 @@ class GPTModel(LanguageModule):
                     packed_seq=packed_seq_params is not None
                     and packed_seq_params.qkv_format == 'thd',
                 )
-        elif self.position_embedding_type == 'mrope' and not self.config.multi_latent_attention:
+        elif self.position_embedding_type == 'mrope' and not (self.config.multi_latent_attention or self.config.gla_attention):
             if self.training or not self.config.flash_decode:
                 rotary_pos_emb = self.rotary_pos_emb(position_ids, self.mrope_section)
             else:
