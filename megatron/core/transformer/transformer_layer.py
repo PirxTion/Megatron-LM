@@ -192,6 +192,29 @@ def get_transformer_layer_offset(
     return offset
 
 
+class PerLayerEmbedding(MegatronModule):
+    """
+    Tensor-parallel embedding table that outputs [B*S, H] and is trained
+    by Megatron's distributed optimizer.
+    """
+    def __init__(self, num_embeddings, embedding_dim, config):
+        super().__init__(config=config)
+        from megatron.core.tensor_parallel.layers import VocabParallelEmbedding
+        # VocabParallelEmbedding handles TP splitting and registration
+        self.emb = VocabParallelEmbedding(
+            num_embeddings,
+            embedding_dim,
+            config=config,
+            init_method=lambda x: torch.ones_like(x)
+        )
+
+    def forward(self, input_ids):          # input_ids: [B, S]  (or any 2-D)
+        # flatten to [B*S]  – VocabParallelEmbedding expects 1-D indices
+        flat = input_ids.view(-1)
+        out  = self.emb(flat)              # [B*S, H]
+        return out
+
+
 @dataclass
 class TransformerLayerSubmodules:
     """
@@ -234,6 +257,9 @@ class TransformerLayerSubmodules:
 
     # Mapping for sharded tensor keys to be applied in `sharded_state_dict` method
     sharded_state_dict_keys_map: Dict[str, str] = field(default_factory=dict)
+
+    # MLP Deep Embedding with Output
+    mlp_deep_embed: Union[ModuleSpec, type] = None
 
 
 class BaseTransformerLayer(ABC):
@@ -436,6 +462,12 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         # self.bias_dropout_add_exec_handler = nullcontext if use_nvfuser else torch.enable_grad
         self.bias_dropout_add_exec_handler = torch.enable_grad
 
+        self.mlp_deep_embed = PerLayerEmbedding(
+            num_embeddings=config.vocab_size,
+            embedding_dim=config.hidden_size,
+            config=config
+        )
+
     @staticmethod
     def _get_layer_offset(config: TransformerConfig):
         """
@@ -619,11 +651,11 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
                     False,
                     tensor_parallel.random.get_cuda_rng_tracker,
                     self.pg_collection.tp,
-                    pre_mlp_layernorm_output, tok_ids=tok_ids
+                    pre_mlp_layernorm_output
                 )
             else:
                 mlp_output_with_bias = tensor_parallel.checkpoint(
-                    self.mlp, False, pre_mlp_layernorm_output, tok_ids=tok_ids
+                    self.mlp, False, pre_mlp_layernorm_output
                 )
         elif should_chunk_mlp_for_prefill:
             # Chunk input along sequence dimension
@@ -631,7 +663,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             chunks = pre_mlp_layernorm_output.chunk(num_chunks, dim=0)
 
             # Compute outputs for each chunk
-            outputs = [self.mlp(chunk, tok_ids=tok_ids) for chunk in chunks]
+            outputs = [self.mlp(chunk) for chunk in chunks]
 
             # Aggregate chunk outputs
             mlp_output = torch.cat([out for out, _ in outputs], dim=0)
@@ -640,7 +672,13 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             mlp_output_with_bias = (mlp_output, bias_output)
 
         else:
-            mlp_output_with_bias = self.mlp(pre_mlp_layernorm_output, tok_ids=tok_ids)
+            mlp_output_with_bias = self.mlp(pre_mlp_layernorm_output)
+
+        if tok_ids is not None:
+            s, b, h = mlp_output_with_bias[0].shape
+            scale = self.mlp_deep_embed(tok_ids)            # [B*S, H]
+            scale = scale.view(s, b, h)              # [S, B, H]
+            mlp_output_with_bias[0] = mlp_output_with_bias[0] * scale
 
         if self.recompute_pre_mlp_layernorm:
             # discard the output of the pre-mlp layernorm and register the recompute
