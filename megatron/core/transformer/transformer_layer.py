@@ -678,7 +678,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             s, b, h = mlp_output_with_bias[0].shape
             scale = self.mlp_deep_embed(tok_ids)            # [B*S, H]
             scale = scale.view(s, b, h)              # [S, B, H]
-            mlp_output_with_bias[0] = mlp_output_with_bias[0] * scale
+            mlp_output_with_bias = (mlp_output_with_bias[0] * scale, mlp_output_with_bias[1])
 
         if self.recompute_pre_mlp_layernorm:
             # discard the output of the pre-mlp layernorm and register the recompute
