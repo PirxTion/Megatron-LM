@@ -7,7 +7,6 @@ from typing import Optional, Union
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 from megatron.core.dist_checkpointing import ShardedTensor
@@ -39,30 +38,6 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-from megatron.core.transformer.module import MegatronModule
-
-class PerLayerEmbedding(MegatronModule):
-    """
-    Tensor-parallel embedding table that outputs [B*S, H] and is trained
-    by Megatron's distributed optimizer.
-    """
-    def __init__(self, num_embeddings, embedding_dim, config):
-        super().__init__(config=config)
-        from megatron.core.tensor_parallel.layers import VocabParallelEmbedding
-        # VocabParallelEmbedding handles TP splitting and registration
-        self.emb = VocabParallelEmbedding(
-            num_embeddings,
-            embedding_dim,
-            config=config,
-            init_method=lambda x: torch.ones_like(x)
-        )
-
-    def forward(self, input_ids):          # input_ids: [B, S]  (or any 2-D)
-        # flatten to [B*S]  – VocabParallelEmbedding expects 1-D indices
-        flat = input_ids.view(-1)
-        out  = self.emb(flat)              # [B*S, H]
-        return out
-
 
 # pylint: disable=missing-class-docstring
 @dataclass
@@ -75,7 +50,6 @@ class MLPSubmodules:
     linear_fc1: Union[ModuleSpec, type] = None
     activation_func: Union[ModuleSpec, type] = None
     linear_fc2: Union[ModuleSpec, type] = None
-    ple: Union[ModuleSpec, type] = None
 
 
 class MLP(MegatronModule):
@@ -165,16 +139,7 @@ class MLP(MegatronModule):
             tp_group=tp_group,
         )
 
-        self.ple = PerLayerEmbedding(
-            num_embeddings=config.vocab_size,
-            embedding_dim=config.hidden_size,
-            config=config
-        )
-
-    def forward(self, hidden_states, per_token_scale=None, tok_ids=None):
-
-        assert tok_ids is not None
-        
+    def forward(self, hidden_states, per_token_scale=None):
         """Perform the forward pass through the MLP block."""
         # [s, b, 4 * h/p]
         nvtx_range_push(suffix="linear_fc1")
@@ -248,12 +213,6 @@ class MLP(MegatronModule):
 
         if per_token_scale is not None:
             assert output_bias is None, "Bias is not supported with per_token_scale"
-
-        if tok_ids is not None:
-            s, b, h = hidden_states.shape
-            scale = self.ple(tok_ids)            # [B*S, H]
-            scale = scale.view(s, b, h)          # [S, B, H]
-            output = output * scale
 
         return output, output_bias
 
