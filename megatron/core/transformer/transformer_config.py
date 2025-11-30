@@ -566,6 +566,9 @@ class TransformerConfig(ModelParallelConfig):
     moe_apply_probs_on_input: bool = False
     """Apply probs on input of experts instead of applying after activation and glu."""
 
+    deep_embed: bool = False
+    "Deep Embedding"
+
     ##################
     # Context Parallel
     ##################
