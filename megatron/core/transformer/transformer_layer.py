@@ -462,11 +462,14 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         # self.bias_dropout_add_exec_handler = nullcontext if use_nvfuser else torch.enable_grad
         self.bias_dropout_add_exec_handler = torch.enable_grad
 
-        self.mlp_deep_embed = DeepEmbedding(
-            num_embeddings=config.vocab_size,
-            embedding_dim=config.hidden_size,
-            config=config
-        )
+        if config.deep_embed:
+            self.mlp_deep_embed = PerLayerEmbedding(
+                num_embeddings=config.vocab_size,
+                embedding_dim=config.hidden_size,
+                config=config
+            )
+        else:
+            self.mlp_deep_embed = None
 
     @staticmethod
     def _get_layer_offset(config: TransformerConfig):
@@ -674,7 +677,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         else:
             mlp_output_with_bias = self.mlp(pre_mlp_layernorm_output)
 
-        if tok_ids is not None:
+        if self.mlp_deep_embed is not None and tok_ids is not None:
             s, b, h = mlp_output_with_bias[0].shape
             scale = self.mlp_deep_embed(tok_ids)            # [B*S, H]
             scale = scale.view(s, b, h)              # [S, B, H]
