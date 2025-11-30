@@ -192,7 +192,7 @@ def get_transformer_layer_offset(
     return offset
 
 
-class PerLayerEmbedding(MegatronModule):
+class DeepEmbedding(MegatronModule):
     """
     Tensor-parallel embedding table that outputs [B*S, H] and is trained
     by Megatron's distributed optimizer.
@@ -462,7 +462,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         # self.bias_dropout_add_exec_handler = nullcontext if use_nvfuser else torch.enable_grad
         self.bias_dropout_add_exec_handler = torch.enable_grad
 
-        self.mlp_deep_embed = PerLayerEmbedding(
+        self.mlp_deep_embed = DeepEmbedding(
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,
             config=config
