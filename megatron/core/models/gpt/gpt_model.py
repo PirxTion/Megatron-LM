@@ -385,7 +385,7 @@ class GPTModel(LanguageModule):
         hidden_states = self.decoder(
             hidden_states=decoder_input,
             attention_mask=attention_mask,
-            tok_ids=input_ids,
+            tok_ids=input_ids if self.config.deep_embed else None,
             inference_context=inference_context,
             rotary_pos_emb=rotary_pos_emb,
             rotary_pos_cos=rotary_pos_cos,
