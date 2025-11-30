@@ -463,7 +463,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         self.bias_dropout_add_exec_handler = torch.enable_grad
 
         if config.deep_embed:
-            self.mlp_deep_embed = PerLayerEmbedding(
+            self.mlp_deep_embed = DeepEmbedding(
                 num_embeddings=config.vocab_size,
                 embedding_dim=config.hidden_size,
                 config=config
