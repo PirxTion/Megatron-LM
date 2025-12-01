@@ -680,7 +680,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         if self.mlp_deep_embed is not None and tok_ids is not None:
             s, b, h = mlp_output_with_bias[0].shape
             scale = self.mlp_deep_embed(tok_ids)            # [B*S, H]
-            scale = scale.view(b, s, h).permute(1, 0, 2)  # [S, B, H]
+            scale = scale.view(b, s, h).transpose(0, 1).contiguous()  # [S, B, H]
             mlp_output_with_bias = (mlp_output_with_bias[0] * scale, mlp_output_with_bias[1])
 
         if self.recompute_pre_mlp_layernorm:
