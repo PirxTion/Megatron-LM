@@ -742,6 +742,7 @@ def print_model_parameter_counts(model):
 
     dense_params = 0
     moe_params = 0
+    shared_expert_params = 0
 
     for model_chunk in model:
         for name, param in model_chunk.named_parameters():
@@ -764,22 +765,31 @@ def print_model_parameter_counts(model):
                         if 'position' not in name: # Position embeddings are usually not shared this way
                             continue
 
-            # 3. Classify Dense vs MoE
+            # 3. Classify Dense vs MoE vs Shared Experts
             # MoE parameters in MCore typically have `allreduce=False`
-            is_moe = not getattr(param, 'allreduce', True) or 'expert' in name
+            is_shared_expert = 'shared_experts' in name
+            is_moe = not is_shared_expert and (not getattr(param, 'allreduce', True) or 'expert' in name)
 
-            if is_moe:
+            if is_shared_expert:
+                # Shared experts are always active (no top-k gating)
+                shared_expert_params += param.numel()
+            elif is_moe:
                 moe_params += param.numel()
             else:
                 dense_params += param.numel()
 
     # Sum across Model Parallel Group (TP + PP + EP)
-    counts = torch.tensor([dense_params, moe_params], dtype=torch.float32, device=torch.cuda.current_device())
+    counts = torch.tensor(
+        [dense_params, moe_params, shared_expert_params],
+        dtype=torch.float32,
+        device=torch.cuda.current_device(),
+    )
     torch.distributed.all_reduce(counts, group=parallel_state.get_model_parallel_group())
     
     total_dense = counts[0].item()
     total_moe = counts[1].item()
-    total_params = total_dense + total_moe
+    total_shared_expert = counts[2].item()
+    total_params = total_dense + total_moe + total_shared_expert
 
     # 4. Calculate Activated Parameters
     # Dense params are always activated.
@@ -788,10 +798,11 @@ def print_model_parameter_counts(model):
     if args.num_experts is not None and args.num_experts > 0 and total_moe > 0:
         # Assuming standard MoE where experts are identical size
         # Activated MoE = (Total MoE / Num Experts) * TopK
-        topk = getattr(args, 'moe_router_topk', 1) # Default to 1 if not set
+        topk = getattr(args, 'moe_router_topk', 2) # Default to 2 if not set
         activated_moe = (total_moe / args.num_experts) * topk
     
-    activated_params = total_dense + activated_moe
+    # Shared experts are fully active (not gated like routed experts).
+    activated_params = total_dense + total_shared_expert + activated_moe
 
     # Print on Rank 0
     if torch.distributed.get_rank() == 0:
@@ -800,5 +811,6 @@ def print_model_parameter_counts(model):
         print(f" > Total Parameters:     {total_params / 1e9:.3f} B")
         print(f" > Activated Parameters: {activated_params / 1e9:.3f} B")
         print(f"    - Dense:             {total_dense / 1e9:.3f} B")
-        print(f"    - MoE:               {total_moe / 1e9:.3f} B")
+        print(f"    - Shared Experts:    {total_shared_expert / 1e9:.3f} B")
+        print(f"    - MoE (routed):      {total_moe / 1e9:.3f} B")
         print(f"--------------------------------------------------")
