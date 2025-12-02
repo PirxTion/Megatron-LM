@@ -462,14 +462,13 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         # self.bias_dropout_add_exec_handler = nullcontext if use_nvfuser else torch.enable_grad
         self.bias_dropout_add_exec_handler = torch.enable_grad
 
+        self.mlp_deep_embed = None
         if config.deep_embed:
-            self.deep_embed = DeepEmbedding(
+            self.mlp_deep_embed = DeepEmbedding(
                 num_embeddings=config.vocab_size,
                 embedding_dim=config.hidden_size,
                 config=config
             )
-        else:
-            self.mlp_deep_embed = None
 
     @staticmethod
     def _get_layer_offset(config: TransformerConfig):
@@ -609,12 +608,6 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             hidden_states = self.cross_attn_bda(self.training, self.config.bias_dropout_fusion)(
                 attention_output_with_bias, residual, self.hidden_dropout
             )
-        
-        if self.deep_embed is not None and tok_ids is not None:
-            s, b, h = hidden_states.shape
-            scale = self.deep_embed(tok_ids)            # [B*S, H]
-            scale = scale.view(b, s, h).transpose(0, 1).contiguous()  # [S, B, H]
-            hidden_states = hidden_states * scale
 
         return hidden_states, context
 
@@ -640,6 +633,15 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             )
         else:
             pre_mlp_layernorm_output = self.pre_mlp_layernorm(hidden_states)
+
+        if (
+            self.mlp_deep_embed is not None
+            and tok_ids is not None
+        ):
+            s, b, h = pre_mlp_layernorm_output.shape
+            scale = self.mlp_deep_embed(tok_ids)  # [B*S, H]
+            scale = scale.view(b, s, h).transpose(0, 1).contiguous()  # [S, B, H]
+            pre_mlp_layernorm_output = pre_mlp_layernorm_output * scale
 
         nvtx_range_push(suffix="mlp")
         # Potentially chunk the MLP computation during prefill to minimize the peak activation size
@@ -682,12 +684,6 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
 
         else:
             mlp_output_with_bias = self.mlp(pre_mlp_layernorm_output)
-
-        # if self.mlp_deep_embed is not None and tok_ids is not None:
-        #     s, b, h = mlp_output_with_bias[0].shape
-        #     scale = self.mlp_deep_embed(tok_ids)            # [B*S, H]
-        #     scale = scale.view(b, s, h).transpose(0, 1).contiguous()  # [S, B, H]
-        #     mlp_output_with_bias = (mlp_output_with_bias[0] * scale, mlp_output_with_bias[1])
 
         if self.recompute_pre_mlp_layernorm:
             # discard the output of the pre-mlp layernorm and register the recompute
