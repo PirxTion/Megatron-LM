@@ -205,7 +205,7 @@ class DeepEmbedding(MegatronModule):
             num_embeddings,
             embedding_dim,
             config=config,
-            init_method=lambda x: torch.ones_like(x)
+            init_method=lambda w: w.data.fill_(1.0) 
         )
 
     def forward(self, input_ids):          # input_ids: [B, S]  (or any 2-D)
