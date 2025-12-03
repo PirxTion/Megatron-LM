@@ -576,6 +576,15 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
                 attention_output_with_bias[0]
             )
 
+        if self.mlp_deep_embed is not None and tok_ids is not None:
+            s, b, h = attention_output_with_bias[0].shape
+            scale = self.mlp_deep_embed(tok_ids)            # [B*S, H]
+            scale = scale.view(b, s, h).transpose(0, 1).contiguous()  # [S, B, H]
+            attention_output_with_bias = (
+                attention_output_with_bias[0] * scale,
+                attention_output_with_bias[1],
+            )
+
         # TODO: could we move `bias_dropout_add_exec_handler` itself
         # inside the module provided in the `bias_dropout_add_spec` module?
         nvtx_range_push(suffix="self_attn_bda")
@@ -608,12 +617,6 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             hidden_states = self.cross_attn_bda(self.training, self.config.bias_dropout_fusion)(
                 attention_output_with_bias, residual, self.hidden_dropout
             )
-        
-        if self.mlp_deep_embed is not None and tok_ids is not None:
-            s, b, h = hidden_states.shape
-            scale = self.mlp_deep_embed(tok_ids)            # [B*S, H]
-            scale = scale.view(b, s, h).transpose(0, 1).contiguous()  # [S, B, H]
-            hidden_states = hidden_states * scale
 
         return hidden_states, context
 
