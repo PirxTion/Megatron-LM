@@ -151,6 +151,12 @@ class TransformerConfig(ModelParallelConfig):
     activation_func: Callable = F.gelu
     """Activation function to use for the non-linearity in the MLP."""
 
+    headwise_attn_output_gate: bool = False
+    """Use a per-head gate derived from the query projection to scale attention outputs."""
+
+    elementwise_attn_output_gate: bool = False
+    """Use an elementwise gate derived from the query projection to scale attention outputs."""
+
     activation_func_fp8_input_store: bool = False
     """Store the input of MLP activation function in FP8 for backprop to save memory.
     The stored input is casted back to the original precision before backprop compuatation."""
@@ -729,6 +735,12 @@ class TransformerConfig(ModelParallelConfig):
             raise ValueError(
                 f"num_query_groups ({self.num_query_groups}) must be a multiple of "
                 f"tensor_model_parallel_size ({self.tensor_model_parallel_size})."
+            )
+
+        if self.headwise_attn_output_gate and self.elementwise_attn_output_gate:
+            raise ValueError(
+                "Only one attention output gating strategy can be enabled at a time "
+                "(headwise or elementwise)."
             )
 
         if self.fp8:

@@ -791,6 +791,12 @@ def validate_args(args, defaults={}):
         assert args.hidden_size % args.num_attention_heads == 0
         args.kv_channels = args.hidden_size // args.num_attention_heads
 
+    if args.headwise_attn_output_gate and args.elementwise_attn_output_gate:
+        raise ValueError(
+            "Only one attention output gating mode can be enabled at a time: "
+            "choose headwise or elementwise."
+        )
+
     if args.seq_length is not None and args.context_parallel_size > 1:
         assert args.seq_length % (args.context_parallel_size * 2) == 0, \
             'seq-length should be a multiple of 2 * context-parallel-size ' \
@@ -1534,6 +1540,10 @@ def _add_network_size_args(parser):
     group.add_argument('--group-query-attention', action='store_true',
                           help='Use group-query attention.')
     group.add_argument('--num-query-groups', type=int, default=1)
+    group.add_argument('--headwise-attn-output-gate', action='store_true',
+                       help='Use a per-head gate derived from the query projection to scale attention outputs.')
+    group.add_argument('--elementwise-attn-output-gate', action='store_true',
+                       help='Use an elementwise gate derived from the query projection to scale attention outputs.')
 
     group.add_argument('--max-position-embeddings', type=int, default=None,
                        help='Maximum number of position embeddings to use. '

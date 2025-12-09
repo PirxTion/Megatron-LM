@@ -694,7 +694,12 @@ class Attention(MegatronModule, ABC):
         # Get the query, key and value tensors based on the type of attention -
         # self or cross attn.
         nvtx_range_push(suffix="qkv")
-        query, key, value = self.get_query_key_value_tensors(hidden_states, key_value_states)
+        qkv = self.get_query_key_value_tensors(hidden_states, key_value_states)
+        if isinstance(qkv, (tuple, list)) and len(qkv) == 4:
+            query, key, value, gate_scores = qkv
+        else:
+            query, key, value = qkv
+            gate_scores = None
         nvtx_range_pop(suffix="qkv")
 
         # ===================================================
@@ -728,6 +733,8 @@ class Attention(MegatronModule, ABC):
                 rotary_interleaved=self.config.rotary_interleaved,
             )
             out = output.transpose(0, 1).contiguous()
+            if gate_scores is not None:
+                out = out * torch.sigmoid(gate_scores)
             context_layer = out.view(out.size(0), out.size(1), -1)
             output, bias = self.linear_proj(context_layer)
             return output, bias
@@ -757,6 +764,8 @@ class Attention(MegatronModule, ABC):
             query = query.squeeze(1)
             key = key.squeeze(1)
             value = value.squeeze(1)
+            if gate_scores is not None:
+                gate_scores = gate_scores.squeeze(1)
         nvtx_range_pop(suffix="adjust_key_value")
 
         # ================================================
@@ -891,6 +900,16 @@ class Attention(MegatronModule, ABC):
                         cu_query_lengths, cu_kv_lengths, kv_lengths, block_table)
                     core_attn_out = rearrange(core_attn_out, 's b h d -> s b (h d)')
 
+        if gate_scores is not None:
+            core_attn_out = core_attn_out.view(
+                core_attn_out.size(0),
+                core_attn_out.size(1),
+                self.num_attention_heads_per_partition,
+                self.hidden_size_per_attention_head,
+            )
+            core_attn_out = core_attn_out * torch.sigmoid(gate_scores)
+            core_attn_out = core_attn_out.view(core_attn_out.size(0), core_attn_out.size(1), -1)
+
         if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
             # reshape to same output shape as unpacked case
             # (t, np, hn) -> (t, b=1, h=np*hn)
@@ -940,10 +959,33 @@ class SelfAttention(Attention):
             pg_collection=pg_collection,
         )
 
+        self.headwise_attn_output_gate = getattr(self.config, "headwise_attn_output_gate", False)
+        self.elementwise_attn_output_gate = getattr(self.config, "elementwise_attn_output_gate", False)
+        if self.headwise_attn_output_gate and self.elementwise_attn_output_gate:
+            raise ValueError(
+                "Only one attention output gating mode can be enabled at a time: "
+                "choose headwise or elementwise."
+            )
+        self.use_attention_output_gate = self.headwise_attn_output_gate or self.elementwise_attn_output_gate
+        self.gate_projection_size = 0
+        if self.use_attention_output_gate:
+            if self.headwise_attn_output_gate:
+                self.gate_projection_size = self.config.num_attention_heads
+            else:
+                self.gate_projection_size = self.query_projection_size
+            world_size = get_pg_size(self.pg_collection.tp)
+            if self.gate_projection_size % world_size != 0:
+                raise ValueError(
+                    "Attention output gate projection size must be divisible by tensor model parallel size."
+                )
+            self.gate_projection_size_per_partition = self.gate_projection_size // world_size
+        else:
+            self.gate_projection_size_per_partition = 0
+
         self.linear_qkv = build_module(
             submodules.linear_qkv,
             self.config.hidden_size,
-            self.query_projection_size + 2 * self.kv_projection_size,
+            self.query_projection_size + 2 * self.kv_projection_size + self.gate_projection_size,
             config=self.config,
             init_method=self.config.init_method,
             gather_output=False,
@@ -1055,42 +1097,59 @@ class SelfAttention(Attention):
         """
         Derives `query`, `key` and `value` tensors from `hidden_states`.
         """
-        # Attention heads [sq, b, h] --> [sq, b, ng * (np/ng + 2) * hn)]
+        # Attention heads [sq, b, h] --> [sq, b, ng * (np/ng + 2) * hn)] (+ optional gating)
         mixed_qkv, _ = self.linear_qkv(hidden_states)
 
-        # [sq, b, hp] --> [sq, b, ng, (np/ng + 2) * hn]
-        new_tensor_shape = mixed_qkv.size()[:-1] + (
-            self.num_query_groups_per_partition,
-            (
-                (self.num_attention_heads_per_partition // self.num_query_groups_per_partition + 2)
-                * self.hidden_size_per_attention_head
-            ),
-        )
-        mixed_qkv = mixed_qkv.view(*new_tensor_shape)
-
         split_arg_list = [
-            (
-                self.num_attention_heads_per_partition
-                // self.num_query_groups_per_partition
-                * self.hidden_size_per_attention_head
-            ),
-            self.hidden_size_per_attention_head,
-            self.hidden_size_per_attention_head,
+            self.num_attention_heads_per_partition * self.hidden_size_per_attention_head,
+            self.num_query_groups_per_partition * self.hidden_size_per_attention_head,
+            self.num_query_groups_per_partition * self.hidden_size_per_attention_head,
         ]
+        if self.use_attention_output_gate:
+            split_arg_list.append(self.gate_projection_size_per_partition)
 
         if SplitAlongDim is not None:
 
-            # [sq, b, ng, (np/ng + 2) * hn]
-            # --> [sq, b, ng, np/ng * hn], [sq, b, ng, hn], [sq, b, ng, hn]
-            (query, key, value) = SplitAlongDim(mixed_qkv, 3, split_arg_list)
+            (query, key, value, *gate) = SplitAlongDim(mixed_qkv, 2, split_arg_list)
         else:
 
-            # [sq, b, ng, (np/ng + 2) * hn]
-            # --> [sq, b, ng, np/ng * hn], [sq, b, ng, hn], [sq, b, ng, hn]
-            (query, key, value) = torch.split(mixed_qkv, split_arg_list, dim=3)
+            (query, key, value, *gate) = torch.split(mixed_qkv, split_arg_list, dim=2)
 
-        # [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
-        query = query.reshape(query.size(0), query.size(1), -1, self.hidden_size_per_attention_head)
+        query = query.view(
+            query.size(0),
+            query.size(1),
+            self.num_attention_heads_per_partition,
+            self.hidden_size_per_attention_head,
+        )
+        key = key.view(
+            key.size(0),
+            key.size(1),
+            self.num_query_groups_per_partition,
+            self.hidden_size_per_attention_head,
+        )
+        value = value.view(
+            value.size(0),
+            value.size(1),
+            self.num_query_groups_per_partition,
+            self.hidden_size_per_attention_head,
+        )
+
+        gate_scores = gate[0] if gate else None
+        if gate_scores is not None:
+            if self.headwise_attn_output_gate:
+                gate_scores = gate_scores.view(
+                    gate_scores.size(0),
+                    gate_scores.size(1),
+                    self.num_attention_heads_per_partition,
+                    1,
+                )
+            else:
+                gate_scores = gate_scores.view(
+                    gate_scores.size(0),
+                    gate_scores.size(1),
+                    self.num_attention_heads_per_partition,
+                    self.hidden_size_per_attention_head,
+                )
 
         if self.q_layernorm is not None:
             query = self.q_layernorm(query)
@@ -1100,6 +1159,9 @@ class SelfAttention(Attention):
 
         if self.config.test_mode:
             self.run_realtime_tests()
+
+        if gate_scores is not None:
+            return query, key, value, gate_scores
 
         return query, key, value
 
