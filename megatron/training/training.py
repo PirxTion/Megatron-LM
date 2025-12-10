@@ -106,6 +106,7 @@ from .utils import (
     calc_params_l2_norm_per_param,
     check_adlr_autoresume_termination,
     logical_and_across_model_parallel_group,
+    print_model_parameter_counts,
     reduce_max_stat_across_model_parallel_group,
     is_last_rank,
     print_rank_0,
@@ -909,6 +910,9 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
             ),
             flush=True,
         )
+
+    from megatron.training.utils import print_model_parameter_counts
+    print_model_parameter_counts(model)
 
     # GPU allocation.
     # For FSDP2, we don't allocate GPU memory here. We allocate GPU memory
