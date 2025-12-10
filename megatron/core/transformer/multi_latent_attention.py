@@ -15,6 +15,7 @@ except ImportError:
     HAVE_EINOPS = False
 
 
+from megatron.core.activations import XSSS
 from megatron.core import parallel_state, tensor_parallel
 from megatron.core.models.common.embeddings import (
     RotaryEmbedding,
@@ -36,7 +37,7 @@ from megatron.core.transformer.custom_layers.transformer_engine import (
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import MLATransformerConfig
-from megatron.core.utils import deprecate_inference_params, is_te_min_version
+from megatron.core.utils import deprecate_inference_params, get_pg_size, is_te_min_version
 
 try:
     from megatron.core.fusions.fused_mla_yarn_rope_apply import (
@@ -111,6 +112,66 @@ class MultiLatentAttention(Attention):
         # Overwrite the base class kv shape to support MLA inference
         self.key_hidden_size = self.q_head_dim
         self.val_hidden_size = self.config.v_head_dim
+
+        self.headwise_attn_output_gate = getattr(self.config, "headwise_attn_output_gate", False)
+        self.elementwise_attn_output_gate = getattr(
+            self.config, "elementwise_attn_output_gate", False
+        )
+        if self.headwise_attn_output_gate and self.elementwise_attn_output_gate:
+            raise ValueError(
+                "Only one attention output gating mode can be enabled at a time: "
+                "choose headwise or elementwise."
+            )
+        self.use_attention_output_gate = (
+            self.headwise_attn_output_gate or self.elementwise_attn_output_gate
+        )
+        self.attn_output_gate_activation = None
+        self.gate_projection_size = 0
+        self.linear_attn_output_gate = None
+        if self.use_attention_output_gate:
+            gate_activation = getattr(self.config, "attn_output_gate_activation", "sigmoid")
+            if gate_activation == "sigmoid":
+                self.attn_output_gate_activation = torch.sigmoid
+            elif gate_activation == "xsss":
+                gate_activation_dtype = getattr(self.config, "params_dtype", torch.bfloat16)
+                self.attn_output_gate_activation = XSSS(
+                    config=self.config, dtype=gate_activation_dtype
+                )
+            else:
+                raise ValueError(
+                    "Unsupported attention output gate activation "
+                    f"{gate_activation}. Expected 'sigmoid' or 'xsss'."
+                )
+            if self.headwise_attn_output_gate:
+                self.gate_projection_size = self.config.num_attention_heads
+            else:
+                self.gate_projection_size = self.query_projection_size
+            world_size = get_pg_size(self.pg_collection.tp)
+            if self.gate_projection_size % world_size != 0:
+                raise ValueError(
+                    "Attention output gate projection size must be divisible by tensor model parallel size."
+                )
+            self.gate_projection_size_per_partition = self.gate_projection_size // world_size
+
+            if submodules.linear_q_proj is None:
+                raise ValueError(
+                    "linear_q_proj submodule must be provided to enable attention output gating."
+                )
+            self.linear_attn_output_gate = build_module(
+                submodules.linear_q_proj,
+                self.config.hidden_size,
+                self.gate_projection_size,
+                config=self.config,
+                init_method=self.config.init_method,
+                gather_output=False,
+                bias=self.config.add_bias_linear or self.config.add_qkv_bias,
+                skip_bias_add=False,
+                is_expert=False,
+                tp_comm_buffer_name='attn_output_gate',
+                tp_group=self.pg_collection.tp,
+            )
+        else:
+            self.gate_projection_size_per_partition = 0
 
         self.recompute_up_proj = (
             self.config.recompute_granularity == 'selective'
@@ -231,13 +292,18 @@ class MultiLatentAttention(Attention):
         # Get the query, key and value tensors based on the type of attention -
         # self or cross attn.
         # query: [96, 1, 16, 128], key:[96, 1, 16, 128], value:[96, 1, 16, 128]
-        query, key, value = self.get_query_key_value_tensors(
+        qkv = self.get_query_key_value_tensors(
             hidden_states,
             key_value_states,
             position_ids,
             packed_seq_params,
             inference_context=inference_context,
         )
+        if isinstance(qkv, (tuple, list)) and len(qkv) == 4:
+            query, key, value, gate_scores = qkv
+        else:
+            query, key, value = qkv
+            gate_scores = None
 
         # ===================================================
         # Adjust key, value for inference
@@ -246,6 +312,14 @@ class MultiLatentAttention(Attention):
         query, key, value, _, attn_mask_type, block_table = self._adjust_key_value_for_inference(
             inference_context, query, key, value, rotary_pos_emb=None
         )
+
+        if packed_seq_params is not None:
+            query = query.squeeze(1)
+            key = key.squeeze(1)
+            if value is not None:
+                value = value.squeeze(1)
+            if gate_scores is not None:
+                gate_scores = gate_scores.squeeze(1)
 
         # TODO: Currently, TE can only accept contiguous tensors for MLA
         query = query.contiguous()
@@ -301,6 +375,18 @@ class MultiLatentAttention(Attention):
             core_attn_out = core_attn_out.contiguous()
 
             # Flatten back: [seq, batch, num_heads * v_head_dim]
+            core_attn_out = core_attn_out.view(core_attn_out.size(0), core_attn_out.size(1), -1)
+
+        if gate_scores is not None:
+            core_attn_out = core_attn_out.view(
+                core_attn_out.size(0),
+                core_attn_out.size(1),
+                self.num_attention_heads_per_partition,
+                self.config.v_head_dim,
+            )
+            core_attn_out = core_attn_out * self._apply_attention_output_gate_activation(
+                gate_scores
+            )
             core_attn_out = core_attn_out.view(core_attn_out.size(0), core_attn_out.size(1), -1)
 
         if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
@@ -478,6 +564,10 @@ class MLASelfAttention(MultiLatentAttention):
         ), f"hidden_states should be 3D, [s, b, n*h], got {hidden_states.ndim}D"
 
         inference_context = deprecate_inference_params(inference_context, inference_params)
+
+        gate_scores = None
+        if self.linear_attn_output_gate is not None:
+            gate_scores, _ = self.linear_attn_output_gate(hidden_states)
 
         # =========================================
         # Prepare RoPE and seqlen related params
@@ -795,6 +885,23 @@ class MLASelfAttention(MultiLatentAttention):
                 query, key, value = qkv_up_proj_and_rope_apply(
                     q_compressed, kv_compressed, k_pos_emb, rotary_pos_emb
                 )
+
+        if gate_scores is not None:
+            if self.headwise_attn_output_gate:
+                gate_scores = gate_scores.view(
+                    gate_scores.size(0),
+                    gate_scores.size(1),
+                    self.num_attention_heads_per_partition,
+                    1,
+                )
+            else:
+                gate_scores = gate_scores.view(
+                    gate_scores.size(0),
+                    gate_scores.size(1),
+                    self.num_attention_heads_per_partition,
+                    self.config.v_head_dim,
+                )
+            return query, key, value, gate_scores
 
         return query, key, value
 
