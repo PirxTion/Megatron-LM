@@ -1544,6 +1544,13 @@ def _add_network_size_args(parser):
                        help='Use a per-head gate derived from the query projection to scale attention outputs.')
     group.add_argument('--elementwise-attn-output-gate', action='store_true',
                        help='Use an elementwise gate derived from the query projection to scale attention outputs.')
+    group.add_argument(
+        '--attn-output-gate-activation',
+        type=str,
+        default='sigmoid',
+        choices=['sigmoid', 'xsss'],
+        help='Activation function to apply to attention output gate scores.',
+    )
 
     group.add_argument('--max-position-embeddings', type=int, default=None,
                        help='Maximum number of position embeddings to use. '

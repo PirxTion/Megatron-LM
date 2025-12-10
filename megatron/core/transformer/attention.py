@@ -10,6 +10,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from megatron.core import tensor_parallel
+from megatron.core.activations import XSSS
 from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.models.common.embeddings.rope_utils import (
     apply_rotary_pos_emb,
@@ -440,6 +441,12 @@ class Attention(MegatronModule, ABC):
                 key, value, block_table = inference_context.key_value_cache(self.layer_number)
         return query, key, value, rotary_pos_emb, attn_mask_type, block_table
 
+    def _apply_attention_output_gate_activation(self, gate_scores: Tensor) -> Tensor:
+        activation = getattr(self, "attn_output_gate_activation", None)
+        if activation is None:
+            activation = torch.sigmoid
+        return activation(gate_scores)
+
     @abstractmethod
     def get_query_key_value_tensors(self, hidden_states, key_value_states):
         """
@@ -734,7 +741,7 @@ class Attention(MegatronModule, ABC):
             )
             out = output.transpose(0, 1).contiguous()
             if gate_scores is not None:
-                out = out * torch.sigmoid(gate_scores)
+                out = out * self._apply_attention_output_gate_activation(gate_scores)
             context_layer = out.view(out.size(0), out.size(1), -1)
             output, bias = self.linear_proj(context_layer)
             return output, bias
@@ -907,7 +914,7 @@ class Attention(MegatronModule, ABC):
                 self.num_attention_heads_per_partition,
                 self.hidden_size_per_attention_head,
             )
-            core_attn_out = core_attn_out * torch.sigmoid(gate_scores)
+            core_attn_out = core_attn_out * self._apply_attention_output_gate_activation(gate_scores)
             core_attn_out = core_attn_out.view(core_attn_out.size(0), core_attn_out.size(1), -1)
 
         if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
@@ -967,8 +974,22 @@ class SelfAttention(Attention):
                 "choose headwise or elementwise."
             )
         self.use_attention_output_gate = self.headwise_attn_output_gate or self.elementwise_attn_output_gate
+        self.attn_output_gate_activation = None
         self.gate_projection_size = 0
         if self.use_attention_output_gate:
+            gate_activation = getattr(self.config, "attn_output_gate_activation", "sigmoid")
+            if gate_activation == "sigmoid":
+                self.attn_output_gate_activation = torch.sigmoid
+            elif gate_activation == "xsss":
+                gate_activation_dtype = getattr(self.config, "params_dtype", torch.bfloat16)
+                self.attn_output_gate_activation = XSSS(
+                    config=self.config, dtype=gate_activation_dtype
+                )
+            else:
+                raise ValueError(
+                    "Unsupported attention output gate activation "
+                    f"{gate_activation}. Expected 'sigmoid' or 'xsss'."
+                )
             if self.headwise_attn_output_gate:
                 self.gate_projection_size = self.config.num_attention_heads
             else:

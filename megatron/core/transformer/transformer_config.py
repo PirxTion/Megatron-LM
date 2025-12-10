@@ -157,6 +157,9 @@ class TransformerConfig(ModelParallelConfig):
     elementwise_attn_output_gate: bool = False
     """Use an elementwise gate derived from the query projection to scale attention outputs."""
 
+    attn_output_gate_activation: str = "sigmoid"
+    """Activation function for attention output gating."""
+
     activation_func_fp8_input_store: bool = False
     """Store the input of MLP activation function in FP8 for backprop to save memory.
     The stored input is casted back to the original precision before backprop compuatation."""
@@ -741,6 +744,12 @@ class TransformerConfig(ModelParallelConfig):
             raise ValueError(
                 "Only one attention output gating strategy can be enabled at a time "
                 "(headwise or elementwise)."
+            )
+        valid_gate_activations = {"sigmoid", "xsss"}
+        if self.attn_output_gate_activation not in valid_gate_activations:
+            raise ValueError(
+                f"attn_output_gate_activation must be one of {valid_gate_activations}, "
+                f"but got {self.attn_output_gate_activation}."
             )
 
         if self.fp8:
